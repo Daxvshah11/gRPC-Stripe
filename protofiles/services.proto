@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+
+// service for master to mapper communication
+
+
+
+
+// ALL MESSAGES
