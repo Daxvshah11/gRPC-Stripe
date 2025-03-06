@@ -13,9 +13,9 @@ import services_pb2 as services2
 MY_PORT = 0
 
 
-# INTERCEPTOR
+# INTERCEPTORS
 class AuthInterceptor(grpc.ServerInterceptor):
-    def interceptService(self, continuation, handler_call_details):
+    def intercept_service(self, continuation, handler_call_details):
         # metadata = dict(handler_call_details.invocation_metadata)
         # username = metadata.get("username")
         # password = metadata.get("password")
@@ -56,7 +56,7 @@ def server():
         privateKey = f.read()
     with open("../certificate/server.crt", "rb") as f:
         certificate = f.read()
-    with open("../certificate/ca.cert", "rb") as f:
+    with open("../certificate/ca.crt", "rb") as f:
         CACert = f.read()
 
     # starting a channel for the server with interpceptors
@@ -67,9 +67,9 @@ def server():
         [(privateKey, certificate)], root_certificates=CACert, require_client_auth=True
     )
     MY_PORT = findFreePort()
-    thisServer.add_secure_port(
-        f"[::]:{MY_PORT}", creds
-    )  # this one is different from what we tried in previous 2 tasks, because we are using SSL security channel na so.....
+
+    # adding a SECURE PORT here based on the credentials (different from what we had done previosuly)
+    thisServer.add_secure_port(f"[::]:{MY_PORT}", creds)
 
     # adding all the servicers to server
 
