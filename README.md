@@ -4,7 +4,9 @@
 
 ### Payment Gateway Server
 
-* Only ONE, always. Assuming that it NEVER goes Offline
+* Only ONE, always
+
+* It can go offline!
 
 * Only Gateway server has the `Interceptors`, and Bank servers dont have it
 
@@ -21,8 +23,23 @@
 
 ### Client
 
-* 
+* For a given bank, a Client will always have `ONLY ONE` Bank account. For a new bank account, he/she has to register with some other Bank
+
+* Can only perform 2 types of **transactions** :
+    - Deposit (in one of his logged in Bank Accounts)
+    - Withdrawal (from one of his logged in Bank Accounts)
 
 
 
 ## I/O Format
+
+
+### Sign Up
+
+* Whenever a new client joins in, by default, its assumed that they can only perform 2 initial actions, namely:
+    - Sign Up (create new Bank Account, if not already existing)
+    - Log In (log into the existing Bank Account, if any)
+
+* Signing up requires letting the gateway know about the Bank name where you want your new Bank Account, your registration emailID & password for the same
+
+* Logging into a Bank Account also requires the same details as those for Signing Up
