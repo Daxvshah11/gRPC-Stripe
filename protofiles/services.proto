@@ -1,9 +1,19 @@
 syntax = "proto3";
 
 
-// service for master to mapper communication
+// service for client to gateway communication
+    service ClientToGateway {
+    rpc signUp (RegReq) returns (RegResp);
+    rpc signIn (RegReq) returns (RegResp);
+}
 
+message RegReq{
+    string bank = 1;
+    string email = 2;
+    string password = 3;
+}
 
-
-
-// ALL MESSAGES
+message RegResp{
+    int32 successAck = 1;
+    string message = 2;
+}
