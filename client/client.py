@@ -27,8 +27,13 @@ def client():
     creds = grpc.ssl_channel_credentials(
         root_certificates=CACert, private_key=privateKey, certificate_chain=certificate
     )
-    gateway_channel = grpc.secure_channel("localhost:50000", creds)
-    gateway_stub = services1.GatewayStub(gateway_channel)
+    # updated secure_channel call with target name override for matching the certificate CN
+    gatewayChannel = grpc.secure_channel(
+        "localhost:50000",
+        creds,
+        options=(("grpc.ssl_target_name_override", "gateway"),),
+    )
+    gatewayStub = services1.ClientToGatewayStub(gatewayChannel)
 
     # getting into loop
     while True:
@@ -41,10 +46,27 @@ def client():
         if cmd == "exit":
             break
 
-        elif cmd == "work":
-            pass
-            # preparing a new request
-            # sending it & getting response
+        elif cmd == "signup":
+            # getting all the inputs
+            bankName = input("Enter the Bank Name : ")
+            emailID = input("Enter the Email ID : ")
+            pswd = input("Enter the Password : ")
+
+            # preparing a new request & sending
+            request = services2.RegReq(bank=bankName, email=emailID, password=pswd)
+            response = gatewayStub.signUp(request)
+            print(response.message)
+
+        elif cmd == "signin" or cmd == "login":
+            # getting all the inputs
+            bankName = input("Enter the Bank Name : ")
+            emailID = input("Enter the Email ID : ")
+            pswd = input("Enter the Password : ")
+
+            # preparing a new request & sending
+            request = services2.RegReq(bank=bankName, email=emailID, password=pswd)
+            response = gatewayStub.signIn(request)
+            print(response.message)
 
         else:
             # printing for error
