@@ -4,11 +4,9 @@
 
 ### Payment Gateway Server
 
-* Only ONE, always
+* Only ONE, always! Never goes Offline
 
-* It can go offline!
-
-* Only Gateway server has the `Interceptors`, and Bank servers dont have it
+* Gateway server has the `Interceptors`, namely Auth & Logging. Thus, assuming that both the functionalities are performed at Gateway itself and so, Bank servers dont have to do it
 
 
 
