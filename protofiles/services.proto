@@ -2,7 +2,7 @@ syntax = "proto3";
 
 
 // service for client to gateway communication
-    service ClientToGateway {
+service ClientToGateway {
     rpc signUp (RegReq) returns (RegResp);
     rpc signIn (RegReq) returns (RegResp);
 }
@@ -16,4 +16,27 @@ message RegReq{
 message RegResp{
     int32 successAck = 1;
     string message = 2;
+}
+
+
+
+// service for server to gateway communication
+service ServerToGateway {
+    rpc register (RegBankReq) returns (RegBankResp);
+}
+
+message RegBankReq{
+    string bankName = 1;
+    int64 bankPort = 2;
+}
+
+message RegBankResp{
+    int32 successAck = 1;
+    string message = 2;
+}
+
+
+
+// service for gateway to server communication
+service GatewayToServer {
 }
