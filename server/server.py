@@ -2,6 +2,7 @@ import grpc
 import sys
 from concurrent import futures
 import socket
+import threading
 
 # changing path for importing rest of the files
 sys.path.append("../protofiles")
@@ -11,24 +12,10 @@ import services_pb2 as services2
 
 # GLOBALS
 MY_PORT = 0
+BANK_NAME = None
 
 
 # INTERCEPTORS
-class AuthInterceptor(grpc.ServerInterceptor):
-    def intercept_service(self, continuation, handler_call_details):
-        # metadata = dict(handler_call_details.invocation_metadata)
-        # username = metadata.get("username")
-        # password = metadata.get("password")
-
-        # if not username or not password or users.get(username) != password:
-
-        #     def abort(request, context):
-        #         context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid credentials")
-
-        #     return grpc.unary_unary_rpc_method_handler(abort)
-
-        # return continuation(handler_call_details)
-        return
 
 
 # SERVICERS
@@ -44,7 +31,14 @@ def findFreePort():
 # the Server function
 def server():
     # re defining the globals
-    global MY_PORT
+    global MY_PORT, BANK_NAME
+
+    # getting the bank name
+    bankName = input("Enter the Bank Name : ")
+    BANK_NAME = bankName
+
+    # getting a random free port
+    MY_PORT = findFreePort()
 
     # declaring certificate variables
     privateKey = None
@@ -59,14 +53,34 @@ def server():
     with open("../certificate/ca.crt", "rb") as f:
         CACert = f.read()
 
-    # starting a channel for the server with interpceptors
+    # connecting to Gateway Server with SSL credentials
+    creds = grpc.ssl_channel_credentials(
+        root_certificates=CACert, private_key=privateKey, certificate_chain=certificate
+    )
+    gatewayChannel = grpc.secure_channel(
+        "localhost:50000",
+        creds,
+        options=(("grpc.ssl_target_name_override", "gateway"),),
+    )
+    gatewayStub = services1.ServerToGatewayStub(gatewayChannel)
+
+    # registering itself with the gateway server
+    request = services2.RegBankReq(bankName=BANK_NAME, bankPort=int(MY_PORT))
+    response = gatewayStub.register(request)
+
+    # checking if failed
+    if response.successAck == 0:
+        print(response.message)
+        return
+
+    # otherwise, starting a channel for the server with interpceptors
     thisServer = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=10), interceptors=[AuthInterceptor()]
+        futures.ThreadPoolExecutor(max_workers=10)
+        # futures.ThreadPoolExecutor(max_workers=10), interceptors=[AuthInterceptor()]
     )
     creds = grpc.ssl_server_credentials(
         [(privateKey, certificate)], root_certificates=CACert, require_client_auth=True
     )
-    MY_PORT = findFreePort()
 
     # adding a SECURE PORT here based on the credentials (different from what we had done previosuly)
     thisServer.add_secure_port(f"[::]:{MY_PORT}", creds)
@@ -75,7 +89,7 @@ def server():
 
     # starting the server
     thisServer.start()
-    print(f"Server started at {MY_PORT}.....")
+    print(f"{BANK_NAME} Server started at {MY_PORT}.....")
 
     # keeping the server alive, awaiting requests
     try:

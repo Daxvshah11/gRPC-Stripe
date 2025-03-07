@@ -2,6 +2,7 @@ import grpc
 import sys
 from concurrent import futures
 import time
+import threading
 
 # changing path for importing rest of the files
 sys.path.append("../protofiles")
@@ -10,90 +11,44 @@ import services_pb2 as services2
 
 
 # GLOBALS
-REGISTERED_BANKS = ["ICICI", "SBI"]
+REGISTERED_BANKS = {"ICICI": 5003, "SBI": 5004}
+ONLINE_BANKS = {"ICICI", "SBI"}
 ACCOUNT_DETAILS = {}
 
 
 # INTERCEPTORS
 
 
-# interceptor for auth check
-class AuthInterceptor(grpc.ServerInterceptor):
+# interceptor for logging details of requests & other info
+class LogInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
         # globals
-        global REGISTERED_BANKS, ACCOUNT_DETAILS
+        global REGISTERED_BANKS, ACCOUNT_DETAILS, ONLINE_BANKS
 
         # storing the og handler
         handlerOG = continuation(handler_call_details)
         if handlerOG is None:
             return None
 
-        # wrapping only the signUp method
-        if handler_call_details.method == "/ClientToGateway/signUp":
-            # wrapping the unary method
+        # creating a wrapper for all, if needed
+        if handlerOG.unary_unary:
+            # defining a new unary_unary function
             def new_unary_unary(request, context):
-                # checking if the Bank is registered or not
-                if request.bank not in REGISTERED_BANKS:
-                    # here, instead of raising an error, I am returning a RegResp msg with failure msg
-                    return services2.RegResp(
-                        successAck=0, message="Bank not registered!"
+                # calling the original handler to get the response
+                response = handlerOG.unary_unary(request, context)
+
+                # logging the details along with the response
+                with open("log.txt", "a") as f:
+                    log_line = (
+                        f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}\t\t"
+                        f"{handler_call_details.method} : "
+                        f"{response.message}\n"
                     )
+                    f.write(log_line)
 
-                # adding new account details to global
-                if (ACCOUNT_DETAILS.get(request.bank) is not None) and (
-                    ACCOUNT_DETAILS[request.bank].get(request.email) is not None
-                ):
-                    return services2.RegResp(
-                        successAck=0, message="Account already exists!"
-                    )
-                elif (
-                    ACCOUNT_DETAILS.get(request.bank) is not None
-                ) and ACCOUNT_DETAILS[request.bank].get(request.email) is None:
-                    ACCOUNT_DETAILS[request.bank][request.email] = request.password
-                elif ACCOUNT_DETAILS.get(request.bank) is None:
-                    ACCOUNT_DETAILS[request.bank] = {}
-                    ACCOUNT_DETAILS[request.bank][request.email] = request.password
-                else:
-                    pass
+                return response
 
-                # otherwise calling og handler
-                return handlerOG.unary_unary(request, context)
-
-            # return new handler that wraps our new_unary_unary function
-            return grpc.unary_unary_rpc_method_handler(
-                new_unary_unary,
-                request_deserializer=handlerOG.request_deserializer,
-                response_serializer=handlerOG.response_serializer,
-            )
-
-        elif handler_call_details.method == "/ClientToGateway/signIn":
-            # wrapping the unary method
-            def new_unary_unary(request, context):
-                # checking if the Bank is registered or not
-                if request.bank not in REGISTERED_BANKS:
-                    # here, instead of raising an error, I am returning a RegResp msg with failure msg
-                    return services2.RegResp(
-                        successAck=0, message="Bank not registered!"
-                    )
-
-                # checking if the given account exists or not
-                if ACCOUNT_DETAILS[request.bank].get(request.email) is None:
-                    return services2.RegResp(
-                        successAck=0, message="Account does not exist!"
-                    )
-                elif (
-                    ACCOUNT_DETAILS[request.bank].get(request.email) != request.password
-                ):
-                    return services2.RegResp(
-                        successAck=0, message="Incorrect Password!"
-                    )
-                else:
-                    pass
-
-                # otherwise calling og handler
-                return handlerOG.unary_unary(request, context)
-
-            # return new handler that wraps our new_unary_unary function
+            # returning a new handler that uses our wrapped function
             return grpc.unary_unary_rpc_method_handler(
                 new_unary_unary,
                 request_deserializer=handlerOG.request_deserializer,
@@ -104,17 +59,104 @@ class AuthInterceptor(grpc.ServerInterceptor):
         return handlerOG
 
 
-# interceptor for logging details of requests & other info
-class LogInterceptor(grpc.ServerInterceptor):
+class AuthInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
-        # logging the request into the file (create file if not exists)
-        with open("gatewayLog.txt", "a") as f:
-            # appending current date & time & method in one line, tab separated
-            f.write(
-                f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}\t{handler_call_details.method}\n"
-            )
+        # globals
+        global REGISTERED_BANKS, ACCOUNT_DETAILS, ONLINE_BANKS
 
-        return continuation(handler_call_details)
+        # storing the OG handler
+        handler = continuation(handler_call_details)
+        if handler is None:
+            return None
+
+        # only wrapping if its unary-unary RPC
+        if handler.unary_unary:
+            # defining a new unary_unary function
+            def new_unary_unary(request, context):
+                # checking if the request is from a Bank server or Client
+                if "/ClientToGateway/" in handler_call_details.method:
+                    # checking if Bank is registered and online
+                    if request.bank not in REGISTERED_BANKS:
+                        return services2.RegResp(
+                            successAck=0, message="Bank not registered!"
+                        )
+                    elif request.bank not in ONLINE_BANKS:
+                        return services2.RegResp(successAck=0, message="Bank Offline!")
+
+                    # method-specific checks here
+                    if handler_call_details.method == "/ClientToGateway/signUp":
+                        # checking if account already exists
+                        if (
+                            ACCOUNT_DETAILS.get(request.bank) is not None
+                            and ACCOUNT_DETAILS[request.bank].get(request.email)
+                            is not None
+                        ):
+                            return services2.RegResp(
+                                successAck=0, message="Account already exists!"
+                            )
+
+                        # adding account if it doesnt exist
+                        elif ACCOUNT_DETAILS.get(request.bank) is not None:
+                            ACCOUNT_DETAILS[request.bank][
+                                request.email
+                            ] = request.password
+                        else:
+                            ACCOUNT_DETAILS[request.bank] = {
+                                request.email: request.password
+                            }
+
+                        # calling the og handler for further processsing
+                        return handler.unary_unary(request, context)
+
+                    elif handler_call_details.method == "/ClientToGateway/signIn":
+                        # checking if the account even exists
+                        if (
+                            ACCOUNT_DETAILS.get(request.bank) is None
+                            or ACCOUNT_DETAILS[request.bank].get(request.email) is None
+                        ):
+                            return services2.RegResp(
+                                successAck=0, message="Account does not exist!"
+                            )
+
+                        # checking for the correct password
+                        if (
+                            ACCOUNT_DETAILS[request.bank][request.email]
+                            != request.password
+                        ):
+                            return services2.RegResp(
+                                successAck=0, message="Incorrect Password!"
+                            )
+
+                        # otherwise, normal futher proceedings
+                        return handler.unary_unary(request, context)
+
+                    else:
+                        # for other methods, simply calling the og handler
+                        return handler.unary_unary(request, context)
+
+                elif "/ServerToGateway/" in handler_call_details.method:
+                    # method based checks here
+                    if (
+                        (handler_call_details.method == "/ServerToGateway/register")
+                        and (request.bankName in REGISTERED_BANKS)
+                        and (request.bankName in ONLINE_BANKS)
+                    ):
+                        return services2.RegBankResp(
+                            successAck=0, message="Bank already Online!"
+                        )
+
+                    # for other cases, simply calling the og handler
+                    return handler.unary_unary(request, context)
+
+            # returning a new handler that uses our wrapper function
+            return grpc.unary_unary_rpc_method_handler(
+                new_unary_unary,
+                request_deserializer=handler.request_deserializer,
+                response_serializer=handler.response_serializer,
+            )
+        else:
+            # for all non-unary RPCs, returning og handler
+            return handler
 
 
 # SERVICERS
@@ -129,6 +171,21 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
     # defining signIn service
     def signIn(self, request, context):
         return services2.RegResp(successAck=1, message="SignIn Successful!")
+
+
+# ServerToGatewayServicer class
+class ServerToGatewayServicer(services1.ServerToGatewayServicer):
+    # defining register service for a Bank
+    def register(self, request, context):
+        # globals
+        global REGISTERED_BANKS, ONLINE_BANKS
+
+        # registering the bank (port updation) & adding to ONLINE set if not already present
+        REGISTERED_BANKS[request.bankName] = request.bankPort
+        if request.bankName not in ONLINE_BANKS:
+            ONLINE_BANKS.add(request.bankName)
+
+        return services2.RegResp(successAck=1, message="Bank Registered & Online!")
 
 
 # the Server function
@@ -147,15 +204,18 @@ def gateway():
     with open("../certificate/ca.crt", "rb") as f:
         CACert = f.read()
 
-    # starting a channel for the server with SSL credentials
+    # starting a channel for the server with SSL credentials (first LOG, then AUTH, because one way flow only possible!!)
     thisServer = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
-        interceptors=[AuthInterceptor(), LogInterceptor()],
+        interceptors=[LogInterceptor(), AuthInterceptor()],
     )
 
     # adding all the servicers to server
     services1.add_ClientToGatewayServicer_to_server(
         ClientToGatewayServicer(), thisServer
+    )
+    services1.add_ServerToGatewayServicer_to_server(
+        ServerToGatewayServicer(), thisServer
     )
 
     # storing all the creds
