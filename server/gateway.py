@@ -3,6 +3,7 @@ import sys
 from concurrent import futures
 import time
 import threading
+import json
 
 # changing path for importing rest of the files
 sys.path.append("../protofiles")
@@ -11,8 +12,7 @@ import services_pb2 as services2
 
 
 # GLOBALS
-REGISTERED_BANKS = {"ICICI": 5003, "SBI": 5004}
-ONLINE_BANKS = {"ICICI", "SBI"}
+ONLINE_BANKS = {}
 ACCOUNT_DETAILS = {}
 
 
@@ -23,7 +23,7 @@ ACCOUNT_DETAILS = {}
 class LogInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
         # globals
-        global REGISTERED_BANKS, ACCOUNT_DETAILS, ONLINE_BANKS
+        global ACCOUNT_DETAILS, ONLINE_BANKS
 
         # storing the og handler
         handlerOG = continuation(handler_call_details)
@@ -34,7 +34,7 @@ class LogInterceptor(grpc.ServerInterceptor):
         if handlerOG.unary_unary:
             # defining a new unary_unary function
             def new_unary_unary(request, context):
-                # calling the original handler to get the response
+                # calling the original handler to get the response (moves ahead in the Chain)
                 response = handlerOG.unary_unary(request, context)
 
                 # logging the details along with the response
@@ -62,7 +62,7 @@ class LogInterceptor(grpc.ServerInterceptor):
 class AuthInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
         # globals
-        global REGISTERED_BANKS, ACCOUNT_DETAILS, ONLINE_BANKS
+        global ACCOUNT_DETAILS, ONLINE_BANKS
 
         # storing the OG handler
         handler = continuation(handler_call_details)
@@ -76,12 +76,10 @@ class AuthInterceptor(grpc.ServerInterceptor):
                 # checking if the request is from a Bank server or Client
                 if "/ClientToGateway/" in handler_call_details.method:
                     # checking if Bank is registered and online
-                    if request.bank not in REGISTERED_BANKS:
+                    if request.bank not in ONLINE_BANKS:
                         return services2.RegResp(
-                            successAck=0, message="Bank not registered!"
+                            successAck=0, message="Bank Offline or Not Registered!"
                         )
-                    elif request.bank not in ONLINE_BANKS:
-                        return services2.RegResp(successAck=0, message="Bank Offline!")
 
                     # method-specific checks here
                     if handler_call_details.method == "/ClientToGateway/signUp":
@@ -137,10 +135,8 @@ class AuthInterceptor(grpc.ServerInterceptor):
                 elif "/ServerToGateway/" in handler_call_details.method:
                     # method based checks here
                     if (
-                        (handler_call_details.method == "/ServerToGateway/register")
-                        and (request.bankName in REGISTERED_BANKS)
-                        and (request.bankName in ONLINE_BANKS)
-                    ):
+                        handler_call_details.method == "/ServerToGateway/register"
+                    ) and (request.bankName in ONLINE_BANKS):
                         return services2.RegBankResp(
                             successAck=0, message="Bank already Online!"
                         )
@@ -178,19 +174,25 @@ class ServerToGatewayServicer(services1.ServerToGatewayServicer):
     # defining register service for a Bank
     def register(self, request, context):
         # globals
-        global REGISTERED_BANKS, ONLINE_BANKS
+        global ONLINE_BANKS
 
-        # registering the bank (port updation) & adding to ONLINE set if not already present
-        REGISTERED_BANKS[request.bankName] = request.bankPort
-        if request.bankName not in ONLINE_BANKS:
-            ONLINE_BANKS.add(request.bankName)
+        # registering & adding the bank to ONLINE_BANKS with port & current time stamp
+        ONLINE_BANKS[request.bankName] = [request.bankPort, time.time()]
 
-        return services2.RegResp(successAck=1, message="Bank Registered & Online!")
+        return services2.RegBankResp(successAck=1, message="Bank Registered & Online!")
 
 
 # the Server function
 def gateway():
-    # re defining the globals
+    global ACCOUNT_DETAILS, ONLINE_BANKS
+
+    # loading the data from the JSON (single JSON object in the file to multiple globals here)
+    with open("./data/gateway.json", "r") as f:
+        data = json.load(f)
+        ACCOUNT_DETAILS = data["ACCOUNT_DETAILS"]
+        ONLINE_BANKS = data["ONLINE_BANKS"]
+
+    print(ONLINE_BANKS)
 
     # getting server certificate & key
     privateKey = None
@@ -234,6 +236,12 @@ def gateway():
     try:
         thisServer.wait_for_termination()
     except KeyboardInterrupt:
+        # storing all the local memory Data into a JSON file (all the Globals basically!)
+        with open("./data/gateway.json", "w") as f:
+            json.dump(
+                {"ACCOUNT_DETAILS": ACCOUNT_DETAILS, "ONLINE_BANKS": ONLINE_BANKS}, f
+            )
+
         print("Server terminating gracefully!")
         thisServer.stop(0)
 

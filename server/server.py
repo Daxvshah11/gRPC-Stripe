@@ -66,11 +66,18 @@ def server():
 
     # registering itself with the gateway server
     request = services2.RegBankReq(bankName=BANK_NAME, bankPort=int(MY_PORT))
-    response = gatewayStub.register(request)
+    try:
+        response = gatewayStub.register(request)
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNAVAILABLE:
+            print("Gateway server unavailable!")
+        else:
+            print(f"gRPC error: {e}")
+        return
 
     # checking if failed
     if response.successAck == 0:
-        print(response.message)
+        print(response.message) 
         return
 
     # otherwise, starting a channel for the server with interpceptors
