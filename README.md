@@ -4,7 +4,13 @@
 
 ### Payment Gateway Server
 
-* Only ONE, always! Never goes Offline
+* Only ONE, always! It can also go offline
+
+* To handle offline case, assuming that there is a Stable storage on Disk locally. Further, to simulate failure, assuming that only *Ctrl+C* is used
+
+* Thus, whenever failure happens, the locally stored memory about everything that has been updated, and is required by the Gateway is immediately stored locally on Disk
+
+* Similarly, whenever the storage comes back up Online, it retrieves all the data from the local Disk storage into its Memory for `faster access`
 
 * Gateway server has the `Interceptors`, namely Auth & Logging. Thus, assuming that both the functionalities are performed at Gateway itself and so, Bank servers dont have to do it
 
