@@ -46,7 +46,14 @@ def client():
         if cmd == "exit":
             break
 
-        elif cmd == "signup":
+        # checking & waiting if the channel is ready or not (UNAVAILABLE)
+        try:
+            grpc.channel_ready_future(gatewayChannel).result(timeout=5)
+        except grpc.FutureTimeoutError:
+            print("Sorry! Gateway server Down!")
+            continue
+
+        if cmd == "signup":
             # getting all the inputs
             bankName = input("Enter the Bank Name : ")
             emailID = input("Enter the Email ID : ")
@@ -54,10 +61,17 @@ def client():
 
             # preparing a new request & sending
             request = services2.RegReq(bank=bankName, email=emailID, password=pswd)
-            response = gatewayStub.signUp(request)
-            print(response.message)
+            try:
+                response = gatewayStub.signUp(request)
+                print(response.message)
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAVAILABLE:
+                    print("Gateway server unavailable!")
+                else:
+                    print(f"gRPC error: {e}")
+                continue
 
-        elif cmd == "signin" or cmd == "login":
+        elif cmd == "login":
             # getting all the inputs
             bankName = input("Enter the Bank Name : ")
             emailID = input("Enter the Email ID : ")
@@ -65,8 +79,15 @@ def client():
 
             # preparing a new request & sending
             request = services2.RegReq(bank=bankName, email=emailID, password=pswd)
-            response = gatewayStub.signIn(request)
-            print(response.message)
+            try:
+                response = gatewayStub.signIn(request)
+                print(response.message)
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAVAILABLE:
+                    print("Gateway server unavailable!")
+                else:
+                    print(f"gRPC error: {e}")
+                continue
 
         else:
             # printing for error
