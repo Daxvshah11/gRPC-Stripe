@@ -4,7 +4,7 @@ syntax = "proto3";
 // service for client to gateway communication
 service ClientToGateway {
     rpc signUp (RegReq) returns (RegResp);
-    rpc signIn (RegReq) returns (RegResp);
+    rpc transact(TransactReq) returns (TransactResp);
 }
 
 message RegReq{
@@ -18,11 +18,26 @@ message RegResp{
     string message = 2;
 }
 
+message TransactReq{
+    string bank = 1;
+    string email = 2;
+    string password = 3;
+    string transactionType = 4;
+    int64 amount = 5;
+}
+
+message TransactResp{
+    int32 successAck = 1;
+    string message = 2;
+    int64 balanceLeft = 3;
+}
+
 
 
 // service for server to gateway communication
 service ServerToGateway {
     rpc register (RegBankReq) returns (RegBankResp);
+    rpc ping(PingReq) returns (PingResp);
 }
 
 message RegBankReq{
@@ -35,8 +50,18 @@ message RegBankResp{
     string message = 2;
 }
 
+message PingReq {
+    string bankName = 1;
+}
+
+message PingResp {
+    string message = 1;
+}
+
 
 
 // service for gateway to server communication
 service GatewayToServer {
+    rpc signUp (RegReq) returns (RegResp);
+    rpc transact(TransactReq) returns (TransactResp);
 }
