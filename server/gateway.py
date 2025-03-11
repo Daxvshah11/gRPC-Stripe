@@ -2,8 +2,9 @@ import grpc
 import sys
 from concurrent import futures
 import time
-import threading
 import json
+import threading
+import os
 
 # changing path for importing rest of the files
 sys.path.append("../protofiles")
@@ -14,6 +15,10 @@ import services_pb2 as services2
 # GLOBALS
 ONLINE_BANKS = {}
 ACCOUNT_DETAILS = {}
+privateKey = None
+certificate = None
+CACert = None
+RUN_PING_CHECK = threading.Event()
 
 
 # INTERCEPTORS
@@ -37,14 +42,21 @@ class LogInterceptor(grpc.ServerInterceptor):
                 # calling the original handler to get the response (moves ahead in the Chain)
                 response = handlerOG.unary_unary(request, context)
 
-                # logging the details along with the response
-                with open("log.txt", "a") as f:
-                    log_line = (
-                        f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}\t\t"
-                        f"{handler_call_details.method} : "
-                        f"{response.message}\n"
-                    )
-                    f.write(log_line)
+                # checking if PING message
+                if "ping" not in handler_call_details.method:
+                    # logging the details along with the response
+                    with open("log.txt", "a") as f:
+                        log_line = (
+                            f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}\t\t"
+                            f"{handler_call_details.method} : "
+                            f"{response.message}\n"
+                        )
+                        f.write(log_line)
+
+                    # printing
+                    print(ACCOUNT_DETAILS)
+                    print(ONLINE_BANKS)
+                    print()
 
                 return response
 
@@ -85,16 +97,22 @@ class AuthInterceptor(grpc.ServerInterceptor):
                     if handler_call_details.method == "/ClientToGateway/signUp":
                         # checking if account already exists
                         if (
-                            ACCOUNT_DETAILS.get(request.bank) is not None
-                            and ACCOUNT_DETAILS[request.bank].get(request.email)
-                            is not None
+                            request.bank in ACCOUNT_DETAILS
+                            and request.email in ACCOUNT_DETAILS[request.bank]
                         ):
                             return services2.RegResp(
                                 successAck=0, message="Account already exists!"
                             )
 
+                        # calling og handler for further processing
+                        ogResp = handler.unary_unary(request, context)
+
+                        # checking response
+                        if ogResp.successAck == 0:
+                            return ogResp
+
                         # adding account if it doesnt exist
-                        elif ACCOUNT_DETAILS.get(request.bank) is not None:
+                        if request.bank in ACCOUNT_DETAILS:
                             ACCOUNT_DETAILS[request.bank][
                                 request.email
                             ] = request.password
@@ -104,9 +122,9 @@ class AuthInterceptor(grpc.ServerInterceptor):
                             }
 
                         # calling the og handler for further processsing
-                        return handler.unary_unary(request, context)
+                        return ogResp
 
-                    elif handler_call_details.method == "/ClientToGateway/signIn":
+                    elif handler_call_details.method == "/ClientToGateway/transact":
                         # checking if the account even exists
                         if (
                             ACCOUNT_DETAILS.get(request.bank) is None
@@ -162,11 +180,107 @@ class AuthInterceptor(grpc.ServerInterceptor):
 class ClientToGatewayServicer(services1.ClientToGatewayServicer):
     # defining signUp service
     def signUp(self, request, context):
+        # connecting to the Bank server
+        newCreds = grpc.ssl_channel_credentials(
+            root_certificates=CACert,
+            private_key=privateKey,
+            certificate_chain=certificate,
+        )
+        bankServerChannel = grpc.secure_channel(
+            f"localhost:{ONLINE_BANKS[request.bank][0]}",
+            newCreds,
+            options=(("grpc.ssl_target_name_override", "server"),),
+        )
+        bankServerStub = services1.GatewayToServerStub(bankServerChannel)
+
+        # checking & waiting if the channel is ready or not (UNAVAILABLE)
+        try:
+            grpc.channel_ready_future(bankServerChannel).result(timeout=5)
+        except grpc.FutureTimeoutError:
+            # removing from Online Banks, if not already removed
+            if ONLINE_BANKS.get(request.bank) is not None:
+                del ONLINE_BANKS[request.bank]
+
+            return services2.TransactResp(
+                successAck=0, message="Bank Server Offline!", balanceLeft=-1
+            )
+
+        # performing signup
+        newReq = services2.RegReq(
+            bank=request.bank, email=request.email, password=request.password
+        )
+        try:
+            response = bankServerStub.signUp(newReq)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                # removing from Online Banks, if not already removed
+                if ONLINE_BANKS.get(request.bank) is not None:
+                    del ONLINE_BANKS[request.bank]
+
+                return services2.RegResp(successAck=0, message="Bank Server Offline!")
+            else:
+                print(f"gRPC error: {e}")
+
         return services2.RegResp(successAck=1, message="SignUp Successful!")
 
-    # defining signIn service
-    def signIn(self, request, context):
-        return services2.RegResp(successAck=1, message="SignIn Successful!")
+    # defining transaction service
+    def transact(self, request, context):
+        # connecting to the Bank server
+        newCreds = grpc.ssl_channel_credentials(
+            root_certificates=CACert,
+            private_key=privateKey,
+            certificate_chain=certificate,
+        )
+        bankServerChannel = grpc.secure_channel(
+            f"localhost:{ONLINE_BANKS[request.bank][0]}",
+            newCreds,
+            options=(("grpc.ssl_target_name_override", "server"),),
+        )
+        bankServerStub = services1.GatewayToServerStub(bankServerChannel)
+
+        # checking & waiting if the channel is ready or not (UNAVAILABLE)
+        try:
+            grpc.channel_ready_future(bankServerChannel).result(timeout=5)
+        except grpc.FutureTimeoutError:
+            # removing from Online Banks, if not already removed
+            if ONLINE_BANKS.get(request.bank) is not None:
+                del ONLINE_BANKS[request.bank]
+
+            return services2.TransactResp(
+                successAck=0, message="Bank Server Offline!", balanceLeft=-1
+            )
+
+        # performing transaction
+        newReq = services2.TransactReq(
+            bank=request.bank,
+            email=request.email,
+            password=request.password,
+            transactionType=request.transactionType,
+            amount=request.amount,
+        )
+        try:
+            response = bankServerStub.transact(newReq)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                # removing from Online Banks, if not already removed
+                if ONLINE_BANKS.get(request.bank) is not None:
+                    del ONLINE_BANKS[request.bank]
+
+                # returning a response to the client
+                return services2.TransactResp(
+                    successAck=0,
+                    message="Bank Server Offline!",
+                    balanceLeft=-1,
+                )
+            else:
+                print(f"gRPC error: {e}")
+
+        # balance left
+        balanceLeft = response.balanceLeft
+
+        return services2.TransactResp(
+            successAck=1, message="Transaction Successful!", balanceLeft=balanceLeft
+        )
 
 
 # ServerToGatewayServicer class
@@ -176,28 +290,56 @@ class ServerToGatewayServicer(services1.ServerToGatewayServicer):
         # globals
         global ONLINE_BANKS
 
-        # registering & adding the bank to ONLINE_BANKS with port & current time stamp
+        # registering & adding the bank to ONLINE_BANKS with port
         ONLINE_BANKS[request.bankName] = [request.bankPort, time.time()]
 
         return services2.RegBankResp(successAck=1, message="Bank Registered & Online!")
 
+    def ping(self, request, context):
+        global ONLINE_BANKS
+
+        if request.bankName in ONLINE_BANKS:
+            # update last ping time (keeping the port unchanged)
+            ONLINE_BANKS[request.bankName][1] = time.time()
+
+        return services2.PingResp(message="PONG")
+
+
+# HELPERS
+
+
+# ping checker thread
+def pingChecker():
+    global ONLINE_BANKS, RUN_PING_CHECK
+
+    while not RUN_PING_CHECK.is_set():
+        current = time.time()
+        for bank in list(ONLINE_BANKS.keys()):
+            last_ping = ONLINE_BANKS[bank][1]
+            if current - last_ping > 2:
+                print(f"{bank} Bank Offline!")
+                del ONLINE_BANKS[bank]
+
 
 # the Server function
 def gateway():
-    global ACCOUNT_DETAILS, ONLINE_BANKS
+    global ACCOUNT_DETAILS, ONLINE_BANKS, privateKey, certificate, CACert, RUN_PING_CHECK
 
-    # loading the data from the JSON (single JSON object in the file to multiple globals here)
-    with open("./data/gateway.json", "r") as f:
-        data = json.load(f)
-        ACCOUNT_DETAILS = data["ACCOUNT_DETAILS"]
-        ONLINE_BANKS = data["ONLINE_BANKS"]
+    # loading the data from the JSON (single JSON object in the file to multiple globals here)\
+    if os.path.exists(f"./data/GATEWAY.json"):
+        with open(f"./data/GATEWAY.json", "r") as f:
+            data = json.load(f)
+            ACCOUNT_DETAILS = data["ACCOUNT_DETAILS"]
+            ONLINE_BANKS = data["ONLINE_BANKS"]
+    else:
+        # creating a new file
+        with open(f"./data/GATEWAY.json", "w") as f:
+            json.dump(
+                {"ACCOUNT_DETAILS": ACCOUNT_DETAILS, "ONLINE_BANKS": ONLINE_BANKS}, f
+            )
 
-    print(ONLINE_BANKS)
-
-    # getting server certificate & key
-    privateKey = None
-    certificate = None
-    CACert = None
+    # printing loaded data
+    print(f"Loaded Data : {ACCOUNT_DETAILS}, {ONLINE_BANKS}")
 
     with open("../certificate/gateway.key", "rb") as f:
         privateKey = f.read()
@@ -232,10 +374,18 @@ def gateway():
     thisServer.start()
     print(f"Gateway Server started.....")
 
+    # starting ping checker thread
+    checkerThread = threading.Thread(target=pingChecker, daemon=True)
+    checkerThread.start()
+
     # keeping the server alive, awaiting requests
     try:
         thisServer.wait_for_termination()
     except KeyboardInterrupt:
+        # joining ping check thread
+        RUN_PING_CHECK.set()
+        checkerThread.join()
+
         # storing all the local memory Data into a JSON file (all the Globals basically!)
         with open("./data/gateway.json", "w") as f:
             json.dump(
