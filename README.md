@@ -14,6 +14,8 @@
 
 * Gateway server has the `Interceptors`, namely Auth & Logging. Thus, assuming that both the functionalities are performed at Gateway itself and so, Bank servers dont have to do it
 
+* Declares Bank server as offline if Ping not received for more than 2 seconds
+
 
 
 ### Bank Servers
@@ -22,6 +24,8 @@
 * Whenever there is a Server inititated, it will ask for the Bank details that will be based out of that Server. Assuming that at any given point of time, there are ONLY UNIQUE Bank names entered
 
 * All the Bank's storages are stored locally in a folder called `./storage/`, where each Bank's exactly 1 unique file is kept. In case there is a new Bank joining then a new file is created. If an older Bank re-joins then it simply opens its own storage file
+
+* Sending a ping after every 0.5 seconds to the Gateway server
 
 
 
@@ -32,6 +36,12 @@
 * Can only perform 2 types of **transactions** :
     - Deposit (in one of his logged in Bank Accounts)
     - Withdrawal (from one of his logged in Bank Accounts)
+
+* Assuming that for every transaction, the Client has to login every time. This can easily be changed based on requirements for ease of use or something similar 
+
+* Thus, based on the above, the client has to provide Bank name, account ID & password for every transaction along with the transaction details
+
+* Only integer transactions are allowed
 
 
 
