@@ -71,17 +71,37 @@ def client():
                     print(f"gRPC error: {e}")
                 continue
 
-        elif cmd == "login":
+        elif cmd == "transact":
             # getting all the inputs
             bankName = input("Enter the Bank Name : ")
             emailID = input("Enter the Email ID : ")
             pswd = input("Enter the Password : ")
+            transactionType = input("Enter the Transaction Type (credit/debit/view) : ")
+            amount = 0
+            if transactionType == "view":
+                amount = -1
+            elif (transactionType == "credit") or (transactionType == "debit"):
+                amount = input("Enter the Amount : ")
+                amount = int(amount)
+            else:
+                print("Transaction type Invalid!")
+                continue
 
             # preparing a new request & sending
-            request = services2.RegReq(bank=bankName, email=emailID, password=pswd)
+            request = services2.TransactReq(
+                bank=bankName,
+                email=emailID,
+                password=pswd,
+                transactionType=transactionType,
+                amount=amount,
+            )
             try:
-                response = gatewayStub.signIn(request)
+                response = gatewayStub.transact(request)
                 print(response.message)
+
+                # printing current balance
+                print(f"Current Balance : {response.balanceLeft}")
+
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
                     print("Gateway server unavailable!")
