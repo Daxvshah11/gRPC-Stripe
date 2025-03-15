@@ -20,6 +20,10 @@ certificate = None
 CACert = None
 RUN_PING_CHECK = threading.Event()
 
+CG_SIGNUP_LOCK = threading.Lock()
+CG_SHARE_LOCK = threading.Lock()
+SG_REGISTER_LOCK = threading.Lock()
+
 
 # INTERCEPTORS
 
@@ -46,16 +50,38 @@ class LogInterceptor(grpc.ServerInterceptor):
                 if "ping" not in handler_call_details.method:
                     # logging the details along with the response
                     with open("log.txt", "a") as f:
-                        log_line = (
-                            f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}\t\t"
-                            f"{handler_call_details.method} : "
-                            f"{response.message}\n"
-                        )
+                        if "ServerToGateway" in handler_call_details.method:
+                            log_line = (
+                                f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
+                                f"{handler_call_details.method}, "
+                                f"{request.bankName}, "
+                                f"Port {request.bankPort}, "
+                                f"{response.message}\n"
+                            )
+                        elif "ClientToGateway" in handler_call_details.method:
+                            if "share" in handler_call_details.method:
+                                log_line = (
+                                    f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
+                                    f"{handler_call_details.method}, "
+                                    f"{request.senderBank} -> {request.receiverBank}, "
+                                    f"Port {request.clientPort}, "
+                                    f"Request ID {request.reqID}, "
+                                    f"{response.message}\n"
+                                )
+                            else:
+                                log_line = (
+                                    f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
+                                    f"{handler_call_details.method}, "
+                                    f"{request.bank}, "
+                                    f"Port {request.clientPort}, "
+                                    f"Request ID {request.reqID}, "
+                                    f"{response.message}\n"
+                                )
                         f.write(log_line)
 
                     # printing
-                    print(ACCOUNT_DETAILS)
-                    print(ONLINE_BANKS)
+                    print(f"ACCOUNT DETAILS : {ACCOUNT_DETAILS}")
+                    print(f"ONLINE BANKS : {ONLINE_BANKS}")
                     print()
 
                 return response
@@ -74,7 +100,7 @@ class LogInterceptor(grpc.ServerInterceptor):
 class AuthInterceptor(grpc.ServerInterceptor):
     def intercept_service(self, continuation, handler_call_details):
         # globals
-        global ACCOUNT_DETAILS, ONLINE_BANKS
+        global ACCOUNT_DETAILS, ONLINE_BANKS, CG_SIGNUP_LOCK, SG_REGISTER_LOCK
 
         # storing the OG handler
         handler = continuation(handler_call_details)
@@ -88,50 +114,52 @@ class AuthInterceptor(grpc.ServerInterceptor):
                 # checking if the request is from a Bank server or Client
                 if "/ClientToGateway/" in handler_call_details.method:
                     # checking if Bank is registered and online
-                    if request.bank not in ONLINE_BANKS:
+                    if (
+                        "share" not in handler_call_details.method
+                        and request.bank not in ONLINE_BANKS
+                    ):
                         return services2.RegResp(
                             successAck=0, message="Bank Offline or Not Registered!"
                         )
 
                     # method-specific checks here
                     if handler_call_details.method == "/ClientToGateway/signUp":
-                        # checking if account already exists
-                        if (
-                            request.bank in ACCOUNT_DETAILS
-                            and request.email in ACCOUNT_DETAILS[request.bank]
-                        ):
-                            return services2.RegResp(
-                                successAck=0, message="Account already exists!"
-                            )
+                        # accquiring the lock (CS ahead)
+                        with CG_SIGNUP_LOCK:
+                            # checking if account already exists
+                            if (
+                                request.bank in ACCOUNT_DETAILS
+                                and request.email in ACCOUNT_DETAILS[request.bank]
+                            ):
+                                return services2.RegResp(
+                                    successAck=1, message="Account already exists!"
+                                )
 
-                        # calling og handler for further processing
-                        ogResp = handler.unary_unary(request, context)
+                            # calling og handler for further processing
+                            ogResp = handler.unary_unary(request, context)
 
-                        # checking response
-                        if ogResp.successAck == 0:
-                            return ogResp
+                            # checking response
+                            if ogResp.successAck == 0:
+                                return ogResp
 
-                        # adding account if it doesnt exist
-                        if request.bank in ACCOUNT_DETAILS:
-                            ACCOUNT_DETAILS[request.bank][
-                                request.email
-                            ] = request.password
-                        else:
-                            ACCOUNT_DETAILS[request.bank] = {
-                                request.email: request.password
-                            }
+                            # adding account if it doesnt exist
+                            if request.bank in ACCOUNT_DETAILS:
+                                ACCOUNT_DETAILS[request.bank][
+                                    request.email
+                                ] = request.password
+                            else:
+                                ACCOUNT_DETAILS[request.bank] = {
+                                    request.email: request.password
+                                }
 
                         # calling the og handler for further processsing
                         return ogResp
 
                     elif handler_call_details.method == "/ClientToGateway/transact":
                         # checking if the account even exists
-                        if (
-                            ACCOUNT_DETAILS.get(request.bank) is None
-                            or ACCOUNT_DETAILS[request.bank].get(request.email) is None
-                        ):
+                        if request.email not in ACCOUNT_DETAILS[request.bank]:
                             return services2.RegResp(
-                                successAck=0, message="Account does not exist!"
+                                successAck=1, message="Account does not exist!"
                             )
 
                         # checking for the correct password
@@ -140,10 +168,50 @@ class AuthInterceptor(grpc.ServerInterceptor):
                             != request.password
                         ):
                             return services2.RegResp(
-                                successAck=0, message="Incorrect Password!"
+                                successAck=1, message="Incorrect Password!"
                             )
 
                         # otherwise, normal futher proceedings
+                        return handler.unary_unary(request, context)
+
+                    elif handler_call_details.method == "/ClientToGateway/share":
+                        # checking if both the banks are online or not
+                        if request.senderBank not in ONLINE_BANKS:
+                            return services2.ShareResp(
+                                successAck=0, message="Sender Bank Offline!"
+                            )
+                        if request.receiverBank not in ONLINE_BANKS:
+                            return services2.ShareResp(
+                                successAck=0, message="Receiver Bank Offline!"
+                            )
+
+                        # checking if both accounts exist in respective Banks & authorized
+                        if (
+                            request.senderEmail
+                            not in ACCOUNT_DETAILS[request.senderBank]
+                        ):
+                            return services2.ShareResp(
+                                successAck=0, message="Sender Account does not exist!"
+                            )
+                        elif request.senderEmail in ACCOUNT_DETAILS[
+                            request.senderBank
+                        ] and (
+                            ACCOUNT_DETAILS[request.senderBank][request.senderEmail]
+                            != request.senderPassword
+                        ):
+                            return services2.ShareResp(
+                                successAck=0, message="Incorrect Sender Password!"
+                            )
+
+                        if (
+                            request.receiverEmail
+                            not in ACCOUNT_DETAILS[request.receiverBank]
+                        ):
+                            return services2.ShareResp(
+                                successAck=0, message="Receiver Account does not exist!"
+                            )
+
+                        # normal futher proceedings
                         return handler.unary_unary(request, context)
 
                     else:
@@ -151,16 +219,18 @@ class AuthInterceptor(grpc.ServerInterceptor):
                         return handler.unary_unary(request, context)
 
                 elif "/ServerToGateway/" in handler_call_details.method:
-                    # method based checks here
-                    if (
-                        handler_call_details.method == "/ServerToGateway/register"
-                    ) and (request.bankName in ONLINE_BANKS):
-                        return services2.RegBankResp(
-                            successAck=0, message="Bank already Online!"
-                        )
+                    # getting the lock (CS ahead)
+                    with SG_REGISTER_LOCK:
+                        # method based checks here
+                        if (
+                            handler_call_details.method == "/ServerToGateway/register"
+                        ) and (request.bankName in ONLINE_BANKS):
+                            return services2.RegBankResp(
+                                successAck=0, message="Bank already Online!"
+                            )
 
-                    # for other cases, simply calling the og handler
-                    return handler.unary_unary(request, context)
+                        # for other cases, simply calling the og handler
+                        return handler.unary_unary(request, context)
 
             # returning a new handler that uses our wrapper function
             return grpc.unary_unary_rpc_method_handler(
@@ -195,28 +265,20 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
 
         # checking & waiting if the channel is ready or not (UNAVAILABLE)
         try:
-            grpc.channel_ready_future(bankServerChannel).result(timeout=5)
+            grpc.channel_ready_future(bankServerChannel).result(timeout=3)
         except grpc.FutureTimeoutError:
-            # removing from Online Banks, if not already removed
-            if ONLINE_BANKS.get(request.bank) is not None:
-                del ONLINE_BANKS[request.bank]
-
+            # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
             return services2.TransactResp(
                 successAck=0, message="Bank Server Offline!", balanceLeft=-1
             )
 
         # performing signup
-        newReq = services2.RegReq(
-            bank=request.bank, email=request.email, password=request.password
-        )
+        newReq = request
         try:
             response = bankServerStub.signUp(newReq)
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE:
-                # removing from Online Banks, if not already removed
-                if ONLINE_BANKS.get(request.bank) is not None:
-                    del ONLINE_BANKS[request.bank]
-
+                # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
                 return services2.RegResp(successAck=0, message="Bank Server Offline!")
             else:
                 print(f"gRPC error: {e}")
@@ -240,33 +302,20 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
 
         # checking & waiting if the channel is ready or not (UNAVAILABLE)
         try:
-            grpc.channel_ready_future(bankServerChannel).result(timeout=5)
+            grpc.channel_ready_future(bankServerChannel).result(timeout=3)
         except grpc.FutureTimeoutError:
-            # removing from Online Banks, if not already removed
-            if ONLINE_BANKS.get(request.bank) is not None:
-                del ONLINE_BANKS[request.bank]
-
+            # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
             return services2.TransactResp(
                 successAck=0, message="Bank Server Offline!", balanceLeft=-1
             )
 
         # performing transaction
-        newReq = services2.TransactReq(
-            bank=request.bank,
-            email=request.email,
-            password=request.password,
-            transactionType=request.transactionType,
-            amount=request.amount,
-        )
+        newReq = request
         try:
             response = bankServerStub.transact(newReq)
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE:
-                # removing from Online Banks, if not already removed
-                if ONLINE_BANKS.get(request.bank) is not None:
-                    del ONLINE_BANKS[request.bank]
-
-                # returning a response to the client
+                # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
                 return services2.TransactResp(
                     successAck=0,
                     message="Bank Server Offline!",
@@ -275,12 +324,170 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
             else:
                 print(f"gRPC error: {e}")
 
-        # balance left
-        balanceLeft = response.balanceLeft
+        return response
 
-        return services2.TransactResp(
-            successAck=1, message="Transaction Successful!", balanceLeft=balanceLeft
+    # defining failover service
+    def failover(self, request, context):
+        # connecting to the Bank server
+        newCreds = grpc.ssl_channel_credentials(
+            root_certificates=CACert,
+            private_key=privateKey,
+            certificate_chain=certificate,
         )
+        bankServerChannel = grpc.secure_channel(
+            f"localhost:{ONLINE_BANKS[request.bank][0]}",
+            newCreds,
+            options=(("grpc.ssl_target_name_override", "server"),),
+        )
+        bankServerStub = services1.GatewayToServerStub(bankServerChannel)
+
+        # checking & waiting if the channel is ready or not (UNAVAILABLE)
+        try:
+            grpc.channel_ready_future(bankServerChannel).result(timeout=3)
+        except grpc.FutureTimeoutError:
+            # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
+            return services2.FailoverResp(ack=0, message="Bank Server not yet Online!")
+
+        # performing transaction
+        newReq = request
+        try:
+            response = bankServerStub.failover(newReq)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
+                return services2.FailoverResp(ack=0, message="Bank Server Offline!")
+            else:
+                print(f"gRPC error: {e}")
+
+        return response
+
+    # defining share service
+    def share(self, request, context):
+        # connecting to the sender Bank server
+        newCreds = grpc.ssl_channel_credentials(
+            root_certificates=CACert,
+            private_key=privateKey,
+            certificate_chain=certificate,
+        )
+        senderBankServerChannel = grpc.secure_channel(
+            f"localhost:{ONLINE_BANKS[request.senderBank][0]}",
+            newCreds,
+            options=(("grpc.ssl_target_name_override", "server"),),
+        )
+        senderBankServerStub = services1.GatewayToServerStub(senderBankServerChannel)
+
+        # also connecting to the receiver Bank server
+        receiverBankServerChannel = grpc.secure_channel(
+            f"localhost:{ONLINE_BANKS[request.receiverBank][0]}",
+            newCreds,
+            options=(("grpc.ssl_target_name_override", "server"),),
+        )
+        receiverBankServerStub = services1.GatewayToServerStub(
+            receiverBankServerChannel
+        )
+
+        # # checking & waiting if the channels are ready or not (UNAVAILABLE case handling)
+        # try:
+        #     grpc.channel_ready_future(senderBankServerChannel).result(timeout=3)
+        #     grpc.channel_ready_future(receiverBankServerChannel).result(timeout=3)
+        # except grpc.FutureTimeoutError:
+        #     # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
+        #     return services2.FailoverResp(
+        #         ack=0, message="Bank Server(s) not yet Online!"
+        #     )
+
+        # otherwise, asking for commitment from both the Banks (with a timeout of 5 seconds)
+        commReqSender = services2.CommitReq(message="Ready?", shareStatus="sender")
+        commReqReceiver = services2.CommitReq(message="Ready?", shareStatus="receiver")
+        try:
+            commRespSender = senderBankServerStub.commitCheck(commReqSender, timeout=5)
+        except grpc.RpcError as e:
+            if e.code() in (
+                grpc.StatusCode.UNAVAILABLE,
+                grpc.StatusCode.DEADLINE_EXCEEDED,
+                grpc.StatusCode.UNKNOWN,
+            ):
+                return services2.ShareResp(
+                    successAck=0,
+                    message="Sender's Bank Server Offline or response timed out!",
+                    balanceLeft=-1,
+                )
+            else:
+                print(f"gRPC error: {e}")
+                return services2.ShareResp(
+                    successAck=0,
+                    message="Unexpected error in sender commit check",
+                    balanceLeft=-1,
+                )
+
+        try:
+            commRespReceiver = receiverBankServerStub.commitCheck(
+                commReqReceiver, timeout=5
+            )
+        except grpc.RpcError as e:
+            if e.code() in (
+                grpc.StatusCode.UNAVAILABLE,
+                grpc.StatusCode.DEADLINE_EXCEEDED,
+                grpc.StatusCode.UNKNOWN,
+            ):
+                return services2.ShareResp(
+                    successAck=0,
+                    message="Receiver's Bank Server Offline or response timed out!",
+                    balanceLeft=-1,
+                )
+            else:
+                print(f"gRPC error: {e}")
+
+        # otherwise, both Banks are ready. Forwarding share request to sender first
+        newReq = request
+        balanceLeftVal = -1
+        try:
+            response = senderBankServerStub.share(newReq)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
+                return services2.ShareResp(
+                    successAck=0, message="Sender Bank Offline!", balanceLeft=-1
+                )
+            else:
+                print(f"gRPC error: {e}")
+        balanceLeftVal = response.balanceLeft
+
+        # checking if sender was successful
+        if response.successAck == 0 or response.message == "Insufficient Balance!":
+            return response
+
+        # otherwise, forwarding to receiver as well
+        try:
+            response = receiverBankServerStub.share(newReq)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAVAILABLE:
+                # reverting transaction at Sender
+                revertReq = services2.RevertReq(
+                    senderBank=newReq.senderBank,
+                    senderEmail=newReq.senderEmail,
+                    amount=newReq.amount,
+                )
+                # assuming that it will never fail here!!!!!!
+                revertResp = senderBankServerStub.revert(revertReq)
+                balanceLeftVal = revertResp.balanceLeft
+
+                # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
+                return services2.ShareResp(
+                    successAck=0,
+                    message="Receiver Bank Offline!",
+                    balanceLeft=balanceLeftVal,
+                )
+            else:
+                print(f"gRPC error: {e}")
+
+        # if reached here, receiver was also successful
+        finalResp = services2.ShareResp(
+            successAck=1,
+            message="Transaction Successful!",
+            balanceLeft=balanceLeftVal,
+        )
+        return finalResp
 
 
 # ServerToGatewayServicer class
@@ -312,11 +519,22 @@ class ServerToGatewayServicer(services1.ServerToGatewayServicer):
 def pingChecker():
     global ONLINE_BANKS, RUN_PING_CHECK
 
+    # sleep for some time, just for the case when Gateway goes down & comes back up'
+    time.sleep(5)
+
     while not RUN_PING_CHECK.is_set():
         current = time.time()
         for bank in list(ONLINE_BANKS.keys()):
             last_ping = ONLINE_BANKS[bank][1]
             if current - last_ping > 2:
+                # add to logs
+                with open("log.txt", "a") as f:
+                    log_line = (
+                        f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
+                        f"{bank} Bank Offline!\n"
+                    )
+                    f.write(log_line)
+
                 print(f"{bank} Bank Offline!")
                 del ONLINE_BANKS[bank]
 
@@ -387,7 +605,7 @@ def gateway():
         checkerThread.join()
 
         # storing all the local memory Data into a JSON file (all the Globals basically!)
-        with open("./data/gateway.json", "w") as f:
+        with open("./data/GATEWAY.json", "w") as f:
             json.dump(
                 {"ACCOUNT_DETAILS": ACCOUNT_DETAILS, "ONLINE_BANKS": ONLINE_BANKS}, f
             )
