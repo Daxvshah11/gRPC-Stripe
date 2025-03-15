@@ -5,12 +5,16 @@ syntax = "proto3";
 service ClientToGateway {
     rpc signUp (RegReq) returns (RegResp);
     rpc transact(TransactReq) returns (TransactResp);
+    rpc failover(FailoverReq) returns (FailoverResp);
+    rpc share(ShareReq) returns (ShareResp);
 }
 
 message RegReq{
     string bank = 1;
     string email = 2;
     string password = 3;
+    int64 clientPort = 4;
+    int64 reqID = 5;
 }
 
 message RegResp{
@@ -24,12 +28,42 @@ message TransactReq{
     string password = 3;
     string transactionType = 4;
     int64 amount = 5;
+    int64 clientPort = 6;
+    int64 reqID = 7;
 }
 
 message TransactResp{
     int32 successAck = 1;
     string message = 2;
     int64 balanceLeft = 3;
+}
+
+message ShareReq{
+    string senderBank = 1;
+    string senderEmail = 2;
+    string senderPassword = 3;
+    string receiverBank = 4;
+    string receiverEmail = 5;
+    int64 amount = 6;
+    int64 clientPort = 7;
+    int64 reqID = 8;
+}
+
+message ShareResp{
+    int32 successAck = 1;
+    string message = 2;
+    int64 balanceLeft = 3;
+}
+
+message FailoverReq{
+    string bank = 1;
+    int64 clientPort = 2;
+    int64 reqID = 3;
+}
+
+message FailoverResp{
+    int32 ack = 1;
+    string message = 2;
 }
 
 
@@ -64,4 +98,28 @@ message PingResp {
 service GatewayToServer {
     rpc signUp (RegReq) returns (RegResp);
     rpc transact(TransactReq) returns (TransactResp);
+    rpc failover(FailoverReq) returns (FailoverResp);
+    rpc commitCheck(CommitReq) returns (CommitResp);
+    rpc share(ShareReq) returns (ShareResp);
+    rpc revert(RevertReq) returns (RevertResp);
+}
+
+message CommitReq{
+    string message = 1;
+    string shareStatus = 2;
+}
+
+message CommitResp{
+    string message = 1;
+}
+
+message RevertReq{
+    string senderBank = 1;
+    string senderEmail = 2;
+    int64 amount = 3;
+}
+
+message RevertResp{
+    int32 successAck = 1;
+    int64 balanceLeft = 2;
 }
