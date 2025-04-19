@@ -49,7 +49,7 @@ class LogInterceptor(grpc.ServerInterceptor):
                 # checking if PING message
                 if "ping" not in handler_call_details.method:
                     # logging the details along with the response
-                    with open("log.txt", "a") as f:
+                    with open("log.log", "a") as f:
                         if "ServerToGateway" in handler_call_details.method:
                             log_line = (
                                 f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
@@ -346,7 +346,7 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
             grpc.channel_ready_future(bankServerChannel).result(timeout=3)
         except grpc.FutureTimeoutError:
             # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
-            return services2.FailoverResp(ack=0, message="Bank Server not yet Online!")
+            return services2.FailoverResp(successAck=0, message="Bank Server not yet Online!")
 
         # performing transaction
         newReq = request
@@ -355,7 +355,7 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE:
                 # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
-                return services2.FailoverResp(ack=0, message="Bank Server Offline!")
+                return services2.FailoverResp(successAck=0, message="Bank Server Offline!")
             else:
                 print(f"gRPC error: {e}")
 
@@ -393,7 +393,7 @@ class ClientToGatewayServicer(services1.ClientToGatewayServicer):
         # except grpc.FutureTimeoutError:
         #     # simply returning here, not manually removing from Online Banks. Trusting the Ping checker
         #     return services2.FailoverResp(
-        #         ack=0, message="Bank Server(s) not yet Online!"
+        #         successAck=0, message="Bank Server(s) not yet Online!"
         #     )
 
         # otherwise, asking for commitment from both the Banks (with a timeout of 5 seconds)
@@ -528,7 +528,7 @@ def pingChecker():
             last_ping = ONLINE_BANKS[bank][1]
             if current - last_ping > 2:
                 # add to logs
-                with open("log.txt", "a") as f:
+                with open("log.log", "a") as f:
                     log_line = (
                         f"{time.strftime('%d-%m-%Y %H:%M:%S', time.localtime())}, "
                         f"{bank} Bank Offline!\n"
